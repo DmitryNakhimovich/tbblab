@@ -224,13 +224,14 @@ string bwt_decode(string src, uint size, uint key) {
 	return tmp;
 }
 
+// Функтор класс для кодирования
 class Coder {
 public:
 	string c_text;
 	string *c_res;
 	uint *c_key;
 	uint c_block_size;
-
+	uint c_block_num;
 
 	Coder(string _text, string* _res, uint* _key, uint _block_size) : 
 		 c_text(_text), c_res(_res), c_key(_key), c_block_size(_block_size)
@@ -243,12 +244,64 @@ public:
 	void operator()(const blocked_range<int>& r) const
 	{
 		for (int i = r.begin(); i < r.end(); i++) {
-			string tmp = bwt_encode(c_text.substr(i * c_block_size, c_block_size), c_block_size, c_key[i]);
-			c_res[i] = (tmp);
+			c_res[i] = bwt_encode(c_text.substr(i * c_block_size, c_block_size), c_block_size, c_key[i]);		
 		}
 	}
 };
 
+// Функтор класс для декодирования 
+class Decoder {
+public:
+	string c_text;
+	string *c_res;
+	uint *c_key;
+	uint c_block_size;
+	uint c_block_num;
+
+	Decoder(string* _res, uint* _key) :
+			c_res(_res), c_key(_key)
+	{}
+	
+	void operator()(const blocked_range<int>& r) const
+	{
+		for (int i = r.begin(); i < r.end(); i++) {
+			c_res[i] = bwt_decode(c_res[i], c_res[i].length(), c_key[i]);
+		}
+	}
+};
+
+// Сравнение двух файлов
+bool FileEqual(string file1, string file2) {
+	ifstream in1, in2;
+	string iter1, iter2;
+
+	in1.open(file1.c_str());
+	in2.open(file2.c_str());
+
+	if (in1 && in2) {
+		while (in1.good() || in2.good()) {
+			getline(in1, iter1);
+			getline(in2, iter2);
+			if (iter1 != iter2)
+			{
+				in1.close();
+				in2.close();
+				return false;
+			}
+		}		
+		in1.close();
+		in2.close();		
+		return true;
+	}
+	else {
+		cout << "error to open text!" << endl;
+		in1.close();
+		in2.close();
+		return false;
+	}
+
+	return false;
+}
 
 int main(int argc, char* argv[])
 {
@@ -259,6 +312,8 @@ int main(int argc, char* argv[])
 	uint iter = 0, text_size = 0, res_size = 0, block_size = 16, block_num = 0;
 	string text_path = "1.txt";//путь к файлу на чтение
 	string text_res = "out.txt";//путь к файлу результата
+	string text_start = "start.txt";//путь к файлу исходный после преобразований 
+	string text_first = "1.txt";//путь к исходному файлу 
 	char iter_char;
 	tick_count t1, t2;//таймер
 	bool block_flag = false;
@@ -266,11 +321,12 @@ int main(int argc, char* argv[])
 	uint* bwt_key;//массив ключей для каждого блока bwt преобразования
 	uint threads_num = 1;//кол-во потоков
 	char prog_type = 'c';//тип прогр., c - code \ d - decode
-	bool filecompare = false;//сравнение исходного и конечного файла
+	bool file_compare = false;//сравнение исходного и конечного файла
 
 	// инициализация параметров запуска
-	cout << "Enter file path, type (c/d), threads num: " << endl;
+	cout << "Enter file path to open, file path to first text, type (c/d), threads num: " << endl;
 	cin >> text_path;
+	cin >> text_first;
 	cin >> prog_type;
 	cin >> threads_num;
 
@@ -303,11 +359,13 @@ int main(int argc, char* argv[])
 		cout << "short text, running with 1 thread!" << endl;
 	}
 
+	// ===============================================================================
 	// кодирование если 'c' 
 	if (prog_type == 'c') {
+
 		// таймер старт
 		t1 = tick_count::now();
-		
+
 		//bwt преобразование		
 		if (block_flag) {
 			uint chunk = text_size / block_size;
@@ -320,18 +378,19 @@ int main(int argc, char* argv[])
 				block_num++;
 			}*/
 
-			// Запуск параллельного алгоритма for				
-
+			// bwt кодирование 
+			// Запуск параллельного алгоритма for	
 			tbb::parallel_for(tbb::blocked_range<int>(0, chunk), Coder(text_array, bwt_res, bwt_key, block_size));
-
-
 			bwt_res[chunk] = bwt_encode(text_array.substr(chunk * block_size, rem), rem, bwt_key[chunk]);
-			//block_num++;
 
-			for (int i = 0; i < chunk + 1; i++) {
+			/*for (int i = 0; i < chunk + 1; i++) {
 				cout << bwt_res[i];
-			}
+			}*/
 
+			if (rem)
+				block_num = chunk + 1;
+			else
+				block_num = chunk;
 		}
 		else {
 			bwt_res = new string[1];
@@ -341,7 +400,6 @@ int main(int argc, char* argv[])
 			block_num = 1;
 			cout << "_____________________________________" << endl << bwt_res[0] << endl;
 		}
-		
 
 		// таймер стоп
 		t2 = tick_count::now();
@@ -357,27 +415,84 @@ int main(int argc, char* argv[])
 			text_out.close();
 
 		}
+	} 
+
+	// ==============================================================================
+	// если введено 'd'
+	else {		
+		
+		// таймер старт
+		t1 = tick_count::now();
+
+		if (block_flag) {
+			int chunk = text_size / block_size;
+			int rem = text_size % block_size;
+			bwt_res = new string[chunk + 1];
+			bwt_key = new uint[chunk + 1];
+
+			//rle декодирование 
+			res_size = rle_decode(text_array, bwt_res, bwt_key, text_size);
+
+			chunk = res_size / block_size;
+			if (res_size % block_size)
+				block_num = chunk + 1;
+			else
+				block_num = chunk;
+						
+			// bwt декодирование 
+			// Запуск параллельного алгоритма for	
+			tbb::parallel_for(tbb::blocked_range<int>(0, block_num), Decoder(bwt_res, bwt_key));
+				
+		}
+		else {
+			bwt_res = new string[1];
+			bwt_key = new uint[1];
+
+			block_num = 1;
+
+			//rle декодирование 
+			res_size = rle_decode(text_array, bwt_res, bwt_key, text_size);
+			
+			//bwt декодирование 
+			bwt_res[0] = bwt_decode(bwt_res[0], bwt_res[0].length(), bwt_key[0]);
+			
+			cout << bwt_res[0];
+						
+		}
+
+		// таймер стоп
+		t2 = tick_count::now();
+
+		// вывод исходного текста в файл 
+		text_out.open(text_start.c_str(), ios::out);
+		if (text_out) {
+			for (uint i = 0; i < block_num; i++) {
+				text_out << bwt_res[i];
+			}
+			text_out.close();
+		}
+		else {
+			cout << "error to open start file!" << endl;
+			text_out.close();
+
+		}
 	}
-	else {
-		cout << "v razrabotke" << endl;
-	}
 
-
-
-
+	if (prog_type != 'c')
+		file_compare = FileEqual(text_first, text_start);
 
 	//вывод результата
 	cout << endl;
 	cout << "text length: " << text_size
 		 << ", res length: " << res_size
 		 << ", blocks: " << block_num
-		 << ", file compare: " << filecompare
+		 << ", file compare: " << file_compare
 		 << endl;
 	cout << "time elapsed for BWT: " << (t2 - t1).seconds() << endl;
-
+		
 	//очистка памяти
-	//delete[] bwt_res;
-	//delete[] bwt_key;
+	delete[] bwt_res;
+	delete[] bwt_key;
 
 	system("Pause");
 	return 0;
